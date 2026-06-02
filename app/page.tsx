@@ -2,9 +2,10 @@
 import { useState, useEffect } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-const supabase = typeof window !== "undefined" 
-  ? createClient(process.env.NEXT_PUBLIC_SUPABASE_URL || "", process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "")
-  : null as any;
+const sb = () => createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL || "",
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
+);
 
 const MODULOS = [
   { id:"vision", emoji:"◎", label:"Visión del negocio", preguntas:[
@@ -47,7 +48,7 @@ const MODULOS = [
     { id:"canales", label:"¿En qué canales tienes presencia?", placeholder:"Instagram, LinkedIn, email..." },
     { id:"contenido", label:"¿Qué contenido genera más respuesta?", placeholder:"¿Qué formatos conectan mejor?" },
     { id:"frecuencia", label:"¿Con qué frecuencia publicas?", placeholder:"Ej: 3 reels + 1 email a la semana" },
-    { id:"email", label:"¿Tienes lista de email?", placeholder:"Tamaño y plataforma" }
+    { id:"email_list", label:"¿Tienes lista de email?", placeholder:"Tamaño y plataforma" }
   ]},
   { id:"autoridad", emoji:"★", label:"Autoridad", preguntas:[
     { id:"testimonios", label:"¿Tienes testimonios?", placeholder:"Número, formato, dónde están" },
@@ -69,53 +70,55 @@ const MODULOS = [
   ]}
 ];
 
-type Pantalla = "login"|"onboarding"|"diagnostico"|"entregable";
+type Pantalla = "login"|"onboarding"|"diagnostico"|"entregable"|"cargando";
 
 export default function App() {
-  const [pantalla, setPantalla] = useState<Pantalla>("login");
+  const [pantalla, setPantalla] = useState<Pantalla>("cargando");
   const [proyectoId, setProyectoId] = useState("");
   const [nombreEmpresa, setNombreEmpresa] = useState("");
-  const [userId, setUserId] = useState("");
   const [proyectoData, setProyectoData] = useState<any>(null);
+  const [modulosGuardados, setModulosGuardados] = useState<any[]>([]);
+  const [userId, setUserId] = useState("");
+  const [diagnostico, setDiagnostico] = useState<any>(null);
 
-useEffect(() => {
-  supabase.auth.getSession().then(async ({ data }) => {
-    if (data.session?.user) {
-      setUserId(data.session.user.id);
-      // Buscar proyecto existente
+  useEffect(() => {
+    const supabase = sb();
+    supabase.auth.getSession().then(async ({ data }) => {
+      if (!data.session?.user) { setPantalla("login"); return; }
+      const uid = data.session.user.id;
+      setUserId(uid);
       const { data: proyectos } = await supabase
-        .from("proyectos")
-        .select("*")
-        .eq("user_id", data.session.user.id)
-        .order("created_at", { ascending: false })
-        .limit(1);
-      if (proyectos && proyectos.length > 0) {
-        const p = proyectos[0];
-        setProyectoId(p.id);
-        setNombreEmpresa(p.nombre_empresa);
-        setProyectoData(p);
-        // Buscar módulos guardados
-        const { data: modulos } = await supabase
-          .from("modulos_respuestas")
-          .select("*")
-          .eq("proyecto_id", p.id);
-        if (modulos && modulos.length > 0) {
-          setPantalla("diagnostico");
-        } else {
-          setPantalla("onboarding");
-        }
-      } else {
-        setPantalla("onboarding");
-      }
-    }
-  });
-}, []);
+        .from("proyectos").select("*")
+        .eq("user_id", uid)
+        .order("created_at", { ascending: false }).limit(1);
+      if (!proyectos || proyectos.length === 0) { setPantalla("onboarding"); return; }
+      const p = proyectos[0];
+      setProyectoId(p.id);
+      setNombreEmpresa(p.nombre_empresa);
+      setProyectoData(p);
+      const { data: mods } = await supabase
+        .from("modulos_respuestas").select("*").eq("proyecto_id", p.id);
+      setModulosGuardados(mods || []);
+      setPantalla("diagnostico");
+    });
+  }, []);
+
+  if (pantalla === "cargando") return (
+    <div style={{ minHeight:"100vh", background:"#1A1410", display:"flex", alignItems:"center", justifyContent:"center" }}>
+      <div style={{ textAlign:"center" }}>
+        <div style={{ fontFamily:"Georgia,serif", fontSize:40, color:"#D4AE7A", marginBottom:16 }}>✦</div>
+        <p style={{ color:"#9E9088", fontSize:14 }}>Cargando...</p>
+      </div>
+    </div>
+  );
+
+  if (pantalla === "login") return (
+    <Login onLogin={(uid) => { setUserId(uid); setPantalla("onboarding"); }} />
+  );
 
   if (pantalla === "onboarding") return (
     <Onboarding userId={userId} onDone={(id, nombre, data) => {
-      setProyectoId(id);
-      setNombreEmpresa(nombre);
-      setProyectoData(data);
+      setProyectoId(id); setNombreEmpresa(nombre); setProyectoData(data);
       setPantalla("diagnostico");
     }} />
   );
@@ -125,15 +128,16 @@ useEffect(() => {
       proyectoId={proyectoId}
       nombreEmpresa={nombreEmpresa}
       proyectoData={proyectoData}
-      onDone={() => setPantalla("entregable")}
+      modulosIniciales={modulosGuardados}
+      onDone={(diag) => { setDiagnostico(diag); setPantalla("entregable"); }}
     />
   );
 
   if (pantalla === "entregable") return (
-    <Entregable proyectoId={proyectoId} nombreEmpresa={nombreEmpresa} proyectoData={proyectoData} />
+    <Entregable nombreEmpresa={nombreEmpresa} diagnostico={diagnostico} />
   );
 
-  return <Login onLogin={(uid) => { setUserId(uid); setPantalla("onboarding"); }} />;
+  return null;
 }
 
 function Login({ onLogin }: { onLogin: (uid: string) => void }) {
@@ -144,8 +148,8 @@ function Login({ onLogin }: { onLogin: (uid: string) => void }) {
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async () => {
-    setLoading(true);
-    setMsg("");
+    setLoading(true); setMsg("");
+    const supabase = sb();
     try {
       if (modo === "registro") {
         const { error } = await supabase.auth.signUp({ email, password: pass });
@@ -156,11 +160,8 @@ function Login({ onLogin }: { onLogin: (uid: string) => void }) {
         if (error) throw error;
         onLogin(data.user.id);
       }
-    } catch (e: any) {
-      setMsg(e.message);
-    } finally {
-      setLoading(false);
-    }
+    } catch (e: any) { setMsg(e.message); }
+    finally { setLoading(false); }
   };
 
   return (
@@ -172,27 +173,20 @@ function Login({ onLogin }: { onLogin: (uid: string) => void }) {
         <p style={{ fontSize:13, color:"#9E9088", marginBottom:32 }}>
           {modo === "login" ? "Accede a tu diagnóstico" : "Crea tu cuenta gratis"}
         </p>
-        {msg && (
-          <div style={{ padding:"10px 14px", borderRadius:8, marginBottom:16, fontSize:13,
-            background: msg.includes("correo") ? "#D1FAE5" : "#FEE2E2",
-            color: msg.includes("correo") ? "#065F46" : "#991B1B"
-          }}>{msg}</div>
-        )}
+        {msg && <div style={{ padding:"10px 14px", borderRadius:8, marginBottom:16, fontSize:13, background:msg.includes("correo")?"#D1FAE5":"#FEE2E2", color:msg.includes("correo")?"#065F46":"#991B1B" }}>{msg}</div>}
         <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
-          <input type="email" placeholder="tu@email.com" value={email}
-            onChange={e => setEmail(e.target.value)}
+          <input type="email" placeholder="tu@email.com" value={email} onChange={e=>setEmail(e.target.value)}
             style={{ padding:"12px 14px", borderRadius:8, border:"1px solid #DDD5C8", background:"#F0EBE1", fontSize:14, outline:"none" }} />
-          <input type="password" placeholder="Contraseña" value={pass}
-            onChange={e => setPass(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && handleSubmit()}
+          <input type="password" placeholder="Contraseña" value={pass} onChange={e=>setPass(e.target.value)}
+            onKeyDown={e=>e.key==="Enter"&&handleSubmit()}
             style={{ padding:"12px 14px", borderRadius:8, border:"1px solid #DDD5C8", background:"#F0EBE1", fontSize:14, outline:"none" }} />
-          <button onClick={handleSubmit} disabled={loading || !email || !pass}
+          <button onClick={handleSubmit} disabled={loading||!email||!pass}
             style={{ padding:"14px", borderRadius:8, border:"none", background:"#1A1410", color:"#FAF7F2", fontSize:14, cursor:"pointer", fontWeight:500 }}>
-            {loading ? "Cargando..." : modo === "login" ? "Entrar" : "Crear cuenta"}
+            {loading?"Cargando...":modo==="login"?"Entrar":"Crear cuenta"}
           </button>
-          <button onClick={() => { setModo(modo === "login" ? "registro" : "login"); setMsg(""); }}
+          <button onClick={()=>{setModo(modo==="login"?"registro":"login");setMsg("");}}
             style={{ padding:"12px", borderRadius:8, border:"1px solid #B8935A", background:"transparent", color:"#B8935A", fontSize:13, cursor:"pointer" }}>
-            {modo === "login" ? "¿Primera vez? Crear cuenta →" : "¿Ya tienes cuenta? Entrar →"}
+            {modo==="login"?"¿Primera vez? Crear cuenta →":"¿Ya tienes cuenta? Entrar →"}
           </button>
         </div>
       </div>
@@ -200,58 +194,41 @@ function Login({ onLogin }: { onLogin: (uid: string) => void }) {
   );
 }
 
-function Onboarding({ userId, onDone }: { userId: string, onDone: (id: string, nombre: string, data: any) => void }) {
+function Onboarding({ userId, onDone }: { userId:string, onDone:(id:string,nombre:string,data:any)=>void }) {
   const [paso, setPaso] = useState(0);
-  const [datos, setDatos] = useState({
-    nombre_empresa:"", sector:"", tipo_negocio:"",
-    web:"", instagram:"", linkedin:"",
-    pais:"", etapa:"", objetivo_principal:""
-  });
+  const [datos, setDatos] = useState({ nombre_empresa:"", sector:"", tipo_negocio:"", web:"", instagram:"", linkedin:"", pais:"", etapa:"", objetivo_principal:"" });
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState("");
-  const set = (k: string, v: string) => setDatos(p => ({ ...p, [k]: v }));
+  const set = (k:string,v:string) => setDatos(p=>({...p,[k]:v}));
 
   const guardar = async () => {
-    setGuardando(true);
-    setError("");
+    setGuardando(true); setError("");
+    const supabase = sb();
     try {
-      const { data, error } = await supabase
-        .from("proyectos")
-        .insert({
-          user_id: userId,
-          nombre_empresa: datos.nombre_empresa,
-          sector: datos.sector,
-          tipo_negocio: datos.tipo_negocio,
-          web: datos.web,
-          pais: datos.pais,
-          etapa: datos.etapa || "crecimiento",
-          objetivo_principal: datos.objetivo_principal || "posicionamiento",
-          redes_sociales: { instagram: datos.instagram, linkedin: datos.linkedin }
-        })
-        .select()
-        .single();
+      const { data, error } = await supabase.from("proyectos").insert({
+        user_id: userId, nombre_empresa: datos.nombre_empresa, sector: datos.sector,
+        tipo_negocio: datos.tipo_negocio, web: datos.web, pais: datos.pais,
+        etapa: datos.etapa||"crecimiento", objetivo_principal: datos.objetivo_principal||"posicionamiento",
+        redes_sociales: { instagram: datos.instagram, linkedin: datos.linkedin }
+      }).select().single();
       if (error) { setError(error.message); return; }
       onDone(data.id, datos.nombre_empresa, data);
-    } catch(e: any) {
-      setError(e.message);
-    } finally {
-      setGuardando(false);
-    }
+    } catch(e:any) { setError(e.message); }
+    finally { setGuardando(false); }
   };
 
-  const inp = (label: string, key: string, placeholder: string) => (
+  const inp = (label:string, key:string, placeholder:string) => (
     <div key={key}>
       <label style={{ fontSize:11, letterSpacing:"0.1em", color:"#9E9088", display:"block", marginBottom:6 }}>{label.toUpperCase()}</label>
-      <input value={(datos as any)[key]} onChange={e => set(key, e.target.value)} placeholder={placeholder}
+      <input value={(datos as any)[key]} onChange={e=>set(key,e.target.value)} placeholder={placeholder}
         style={{ width:"100%", padding:"12px 14px", borderRadius:8, border:"1px solid #DDD5C8", background:"#F0EBE1", fontSize:14, outline:"none" }} />
     </div>
   );
 
-  const btn = (label: string, key: string, val: string) => (
-    <button key={val} onClick={() => set(key, val)}
+  const btn = (label:string, key:string, val:string) => (
+    <button key={val} onClick={()=>set(key,val)}
       style={{ padding:"12px 16px", borderRadius:8, border:`1px solid ${(datos as any)[key]===val?"#1A1410":"#DDD5C8"}`,
-        background:(datos as any)[key]===val?"#1A1410":"#F0EBE1",
-        color:(datos as any)[key]===val?"#FAF7F2":"#1A1410", fontSize:13, cursor:"pointer" }}>
+        background:(datos as any)[key]===val?"#1A1410":"#F0EBE1", color:(datos as any)[key]===val?"#FAF7F2":"#1A1410", fontSize:13, cursor:"pointer" }}>
       {label}
     </button>
   );
@@ -328,39 +305,49 @@ function Onboarding({ userId, onDone }: { userId: string, onDone: (id: string, n
   );
 }
 
-function Diagnostico({ proyectoId, nombreEmpresa, proyectoData, onDone }: { proyectoId:string, nombreEmpresa:string, proyectoData:any, onDone:()=>void }) {
+function Diagnostico({ proyectoId, nombreEmpresa, proyectoData, modulosIniciales, onDone }:
+  { proyectoId:string, nombreEmpresa:string, proyectoData:any, modulosIniciales:any[], onDone:(diag:any)=>void }) {
   const [moduloActivo, setModuloActivo] = useState(0);
   const [respuestas, setRespuestas] = useState<Record<string,Record<string,string>>>({});
   const [sinDatos, setSinDatos] = useState<Record<string,boolean>>({});
   const [guardando, setGuardando] = useState(false);
   const [generando, setGenerando] = useState(false);
+  const [errorGen, setErrorGen] = useState("");
+
+  useEffect(() => {
+    if (modulosIniciales.length > 0) {
+      const r: Record<string,Record<string,string>> = {};
+      const s: Record<string,boolean> = {};
+      modulosIniciales.forEach((m:any) => {
+        r[m.modulo] = m.respuestas || {};
+        s[m.modulo] = m.sin_datos || false;
+      });
+      setRespuestas(r);
+      setSinDatos(s);
+    }
+  }, [modulosIniciales]);
 
   const modulo = MODULOS[moduloActivo];
+  const setResp = (mid:string,pid:string,val:string) => setRespuestas(p=>({...p,[mid]:{...(p[mid]||{}),[pid]:val}}));
 
-  const setResp = (moduloId:string, pregId:string, val:string) => {
-    setRespuestas(p=>({...p,[moduloId]:{...(p[moduloId]||{}),[pregId]:val}}));
-  };
-
-  const getEstado = (moduloId:string) => {
-    if (sinDatos[moduloId]) return "sin_datos";
-    const r = respuestas[moduloId]||{};
-    const filled = Object.values(r).filter((v:any)=>v?.trim()).length;
+  const getEstado = (mid:string) => {
+    if (sinDatos[mid]) return "sin_datos";
+    const filled = Object.values(respuestas[mid]||{}).filter((v:any)=>v?.trim()).length;
     if (filled===0) return "pendiente";
     if (filled<2) return "parcial";
     return "completo";
   };
 
-  const estadoColor:Record<string,string> = { completo:"#7A8C7E", parcial:"#B8935A", pendiente:"#DDD5C8", sin_datos:"#9E9088" };
-  const estadoLabel:Record<string,string> = { completo:"✓", parcial:"~", pendiente:"·", sin_datos:"—" };
+  const colores:Record<string,string> = { completo:"#7A8C7E", parcial:"#B8935A", pendiente:"#DDD5C8", sin_datos:"#9E9088" };
+  const labels:Record<string,string> = { completo:"✓", parcial:"~", pendiente:"·", sin_datos:"—" };
 
   const guardarModulo = async () => {
     setGuardando(true);
+    const supabase = sb();
     const r = respuestas[modulo.id]||{};
     const filled = Object.values(r).filter((v:any)=>v?.trim()).length;
     await supabase.from("modulos_respuestas").upsert({
-      proyecto_id: proyectoId,
-      modulo: modulo.id,
-      respuestas: r,
+      proyecto_id: proyectoId, modulo: modulo.id, respuestas: r,
       sin_datos: sinDatos[modulo.id]||false,
       estado: sinDatos[modulo.id]?"sin_datos":filled>=3?"completo":filled>0?"parcial":"pendiente",
       score: sinDatos[modulo.id]?0:Math.round((filled/modulo.preguntas.length)*10)
@@ -370,29 +357,21 @@ function Diagnostico({ proyectoId, nombreEmpresa, proyectoData, onDone }: { proy
   };
 
   const generarDiagnostico = async () => {
-    setGenerando(true);
+    setGenerando(true); setErrorGen("");
     try {
-      const modulosData: Record<string,any> = {};
-      MODULOS.forEach(m => {
-        modulosData[m.id] = {
-          respuestas: respuestas[m.id]||{},
-          sin_datos: sinDatos[m.id]||false
-        };
-      });
+      const modulosData:Record<string,any> = {};
+      MODULOS.forEach(m => { modulosData[m.id] = { respuestas: respuestas[m.id]||{}, sin_datos: sinDatos[m.id]||false }; });
       const res = await fetch("/api/generar", {
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
+        method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({ proyecto: proyectoData, modulos: modulosData })
       });
       const data = await res.json();
-      if (data.diagnostico) {
-        localStorage.setItem("diagnostico_brio", JSON.stringify(data.diagnostico));
-      }
-    } catch(e) {
-      console.error(e);
+      if (!res.ok) throw new Error(data.error||"Error generando diagnóstico");
+      onDone(data.diagnostico);
+    } catch(e:any) {
+      setErrorGen(e.message);
+      setGenerando(false);
     }
-    setGenerando(false);
-    onDone();
   };
 
   const completados = MODULOS.filter(m=>["completo","parcial","sin_datos"].includes(getEstado(m.id))).length;
@@ -402,7 +381,7 @@ function Diagnostico({ proyectoId, nombreEmpresa, proyectoData, onDone }: { proy
       <div style={{ width:60, height:60, border:"3px solid #3D2B1F", borderTopColor:"#B8935A", borderRadius:"50%", animation:"spin 1s linear infinite" }} />
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
       <p style={{ fontFamily:"Georgia,serif", fontSize:28, color:"#FAF7F2", fontWeight:300 }}>Generando tu diagnóstico...</p>
-      <p style={{ color:"#9E9088", fontSize:14 }}>Claude está analizando tu negocio</p>
+      <p style={{ color:"#9E9088", fontSize:14 }}>Claude está analizando tu negocio. Puede tardar 30-60 segundos.</p>
     </div>
   );
 
@@ -426,18 +405,20 @@ function Diagnostico({ proyectoId, nombreEmpresa, proyectoData, onDone }: { proy
                   cursor:"pointer", display:"flex", alignItems:"center", gap:10 }}>
                 <span style={{ color:"#9E9088", fontSize:13, width:20 }}>{m.emoji}</span>
                 <span style={{ color:moduloActivo===i?"#FAF7F2":"#9E9088", fontSize:13, flex:1 }}>{m.label}</span>
-                <span style={{ color:estadoColor[est], fontSize:14, fontWeight:600 }}>{estadoLabel[est]}</span>
+                <span style={{ color:colores[est], fontSize:14, fontWeight:600 }}>{labels[est]}</span>
               </button>
             );
           })}
         </div>
         <div style={{ padding:"20px 24px" }}>
+          {errorGen && <div style={{ marginBottom:12, padding:"8px 12px", background:"#FEE2E2", borderRadius:8, fontSize:12, color:"#991B1B" }}>{errorGen}</div>}
           <button onClick={generarDiagnostico}
             style={{ width:"100%", padding:"13px", background:"#B8935A", border:"none", borderRadius:8, color:"#1A1410", fontSize:13, fontWeight:600, cursor:"pointer" }}>
             ✦ Generar diagnóstico
           </button>
         </div>
       </div>
+
       <div style={{ flex:1, padding:"48px 64px", overflowY:"auto" }}>
         <div style={{ marginBottom:8, display:"flex", gap:10, alignItems:"center" }}>
           <span style={{ fontSize:20 }}>{modulo.emoji}</span>
@@ -471,7 +452,7 @@ function Diagnostico({ proyectoId, nombreEmpresa, proyectoData, onDone }: { proy
           </div>
         )}
         <div style={{ display:"flex", gap:12, marginTop:40, paddingTop:32, borderTop:"1px solid #3D2B1F" }}>
-          {moduloActivo>0 && <button onClick={()=>setModuloActivo(m=>m-1)} style={{ padding:"12px 24px", background:"transparent", border:"1px solid #3D2B1F", borderRadius:8, color:"#9E9088", fontSize:14, cursor:"pointer" }}>← Anterior</button>}
+          {moduloActivo>0&&<button onClick={()=>setModuloActivo(m=>m-1)} style={{ padding:"12px 24px", background:"transparent", border:"1px solid #3D2B1F", borderRadius:8, color:"#9E9088", fontSize:14, cursor:"pointer" }}>← Anterior</button>}
           <button onClick={guardarModulo} disabled={guardando}
             style={{ flex:1, padding:"14px", background:"#FAF7F2", border:"none", borderRadius:8, color:"#1A1410", fontSize:14, cursor:"pointer", fontWeight:500 }}>
             {guardando?"Guardando...":moduloActivo<MODULOS.length-1?"Guardar y continuar →":"Guardar módulo →"}
@@ -482,32 +463,14 @@ function Diagnostico({ proyectoId, nombreEmpresa, proyectoData, onDone }: { proy
   );
 }
 
-function Entregable({ proyectoId, nombreEmpresa, proyectoData }: { proyectoId:string, nombreEmpresa:string, proyectoData:any }) {
-  const [diagnostico, setDiagnostico] = useState<any>(null);
+function Entregable({ nombreEmpresa, diagnostico }: { nombreEmpresa:string, diagnostico:any }) {
   const [seccion, setSeccion] = useState("resumen");
-
-  useEffect(() => {
-    const saved = localStorage.getItem("diagnostico_brio");
-    if (saved) setDiagnostico(JSON.parse(saved));
-  }, []);
-
   const scoreColor = (s:number) => s>=7?"#7A8C7E":s>=5?"#B8935A":"#C0623A";
-
-  const scoreLabels: Record<string,string> = {
+  const scoreLabels:Record<string,string> = {
     vision:"Visión", posicionamiento:"Posicionamiento", cliente:"Cliente",
     oferta:"Oferta", marketing:"Marketing", ventas:"Ventas",
     ingresos:"Ingresos", operacion:"Operación", escalabilidad:"Escalabilidad"
   };
-
-  if (!diagnostico) return (
-    <div style={{ minHeight:"100vh", background:"#1A1410", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:16 }}>
-      <div style={{ fontFamily:"Georgia,serif", fontSize:48, color:"#D4AE7A" }}>✦</div>
-      <h1 style={{ fontFamily:"Georgia,serif", fontSize:32, color:"#FAF7F2", fontWeight:300 }}>Diagnóstico de <em style={{ color:"#D4AE7A" }}>{nombreEmpresa}</em></h1>
-      <p style={{ color:"#9E9088", fontSize:14 }}>Cargando diagnóstico...</p>
-    </div>
-  );
-
-  const secciones = ["resumen","scores","roadmap","ingresos"];
 
   return (
     <div style={{ minHeight:"100vh", background:"#1A1410", display:"flex" }}>
@@ -515,7 +478,7 @@ function Entregable({ proyectoId, nombreEmpresa, proyectoData }: { proyectoId:st
         <div style={{ padding:"0 24px 24px" }}>
           <div style={{ fontFamily:"Georgia,serif", color:"#D4AE7A", fontSize:16, marginBottom:4 }}>{nombreEmpresa}</div>
           <div style={{ display:"inline-flex", padding:"3px 10px", borderRadius:20, background:"#B8935A22", color:"#D4AE7A", fontSize:11, marginTop:4 }}>
-            {diagnostico.nivel_madurez}
+            {diagnostico?.nivel_madurez}
           </div>
         </div>
         {[["resumen","Resumen ejecutivo"],["scores","Scores"],["roadmap","Roadmap 90 días"],["ingresos","Plan de ingresos"]].map(([id,label])=>(
@@ -529,15 +492,14 @@ function Entregable({ proyectoId, nombreEmpresa, proyectoData }: { proyectoId:st
       </div>
 
       <div style={{ flex:1, padding:"48px 64px", overflowY:"auto" }}>
-        {seccion==="resumen" && (
+        {seccion==="resumen"&&(
           <div>
             <h1 style={{ fontFamily:"Georgia,serif", fontSize:40, fontWeight:300, color:"#FAF7F2", marginBottom:40 }}>Resumen ejecutivo</h1>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:20, marginBottom:32 }}>
-              {[
-                ["Situación actual", diagnostico.resumen?.situacion_actual],
-                ["Oportunidad principal", diagnostico.resumen?.oportunidad_principal],
-                ["Prioridad inmediata", diagnostico.resumen?.prioridad_inmediata],
-                ["Nivel de madurez", diagnostico.nivel_madurez]
+              {[["Situación actual",diagnostico?.resumen?.situacion_actual],
+                ["Oportunidad principal",diagnostico?.resumen?.oportunidad_principal],
+                ["Prioridad inmediata",diagnostico?.resumen?.prioridad_inmediata],
+                ["Nivel de madurez",diagnostico?.nivel_madurez]
               ].map(([label,valor])=>(
                 <div key={label as string} style={{ padding:24, background:"#2A2016", borderRadius:12, border:"1px solid #3D2B1F" }}>
                   <div style={{ fontSize:10, letterSpacing:"0.1em", color:"#9E9088", marginBottom:10 }}>{(label as string).toUpperCase()}</div>
@@ -545,16 +507,19 @@ function Entregable({ proyectoId, nombreEmpresa, proyectoData }: { proyectoId:st
                 </div>
               ))}
             </div>
-            <div style={{ padding:32, background:"#2A2016", borderRadius:12, border:"1px solid #B8935A33" }}>
+            <div style={{ padding:32, background:"#2A2016", borderRadius:12, border:"1px solid #B8935A33", marginBottom:24 }}>
               <div style={{ fontSize:10, letterSpacing:"0.2em", color:"#B8935A", marginBottom:16 }}>✦ MENSAJE ESTRATÉGICO</div>
               <p style={{ fontFamily:"Georgia,serif", fontSize:24, color:"#FAF7F2", fontStyle:"italic", fontWeight:300, lineHeight:1.5 }}>
-                "{diagnostico.resumen?.mensaje_estrategico}"
+                "{diagnostico?.resumen?.mensaje_estrategico}"
               </p>
             </div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:16, marginTop:24 }}>
-              {[["Fortalezas","#7A8C7E",diagnostico.fortalezas],["Debilidades","#C0623A",diagnostico.debilidades],["Oportunidades","#B8935A",diagnostico.oportunidades]].map(([label,color,items])=>(
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:16 }}>
+              {[["Fortalezas","#7A8C7E",diagnostico?.fortalezas],
+                ["Debilidades","#C0623A",diagnostico?.debilidades],
+                ["Oportunidades","#B8935A",diagnostico?.oportunidades]
+              ].map(([label,color,items])=>(
                 <div key={label as string} style={{ padding:20, background:"#2A2016", borderRadius:12, border:`1px solid ${color as string}33` }}>
-                  <div style={{ fontSize:11, color:color as string, marginBottom:12, letterSpacing:"0.05em" }}>{label as string}</div>
+                  <div style={{ fontSize:11, color:color as string, marginBottom:12 }}>{label as string}</div>
                   {(items as string[])?.map((item,i)=>(
                     <div key={i} style={{ fontSize:13, color:"#FAF7F2", marginBottom:8, display:"flex", gap:8, lineHeight:1.5 }}>
                       <span style={{ color:color as string, flexShrink:0 }}>·</span>{item}
@@ -566,24 +531,24 @@ function Entregable({ proyectoId, nombreEmpresa, proyectoData }: { proyectoId:st
           </div>
         )}
 
-        {seccion==="scores" && (
+        {seccion==="scores"&&(
           <div>
             <h1 style={{ fontFamily:"Georgia,serif", fontSize:40, fontWeight:300, color:"#FAF7F2", marginBottom:40 }}>Score de negocio</h1>
             <div style={{ display:"flex", gap:32, marginBottom:48, alignItems:"flex-start" }}>
               <div style={{ width:140, height:140, borderRadius:"50%", border:"3px solid #B8935A", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", background:"#2A2016", flexShrink:0 }}>
                 <div style={{ fontFamily:"Georgia,serif", fontSize:48, color:"#B8935A", lineHeight:1 }}>
-                  {diagnostico.scores ? Math.round(Object.values(diagnostico.scores as Record<string,number>).reduce((a:number,b:number)=>a+b,0)/Object.keys(diagnostico.scores).length*10)/10 : "—"}
+                  {diagnostico?.scores ? Math.round(Object.values(diagnostico.scores as Record<string,number>).reduce((a:number,b:number)=>a+b,0)/Object.keys(diagnostico.scores).length*10)/10 : "—"}
                 </div>
-                <div style={{ fontSize:10, color:"#9E9088" }}>SCORE GLOBAL</div>
+                <div style={{ fontSize:10, color:"#9E9088" }}>GLOBAL</div>
               </div>
               <div style={{ flex:1, display:"flex", flexDirection:"column", gap:10 }}>
-                {Object.entries(diagnostico.scores||{}).map(([key,score])=>(
+                {Object.entries(diagnostico?.scores||{}).map(([key,score])=>(
                   <div key={key} style={{ display:"flex", alignItems:"center", gap:12 }}>
                     <div style={{ width:120, fontSize:13, color:"#FAF7F2" }}>{scoreLabels[key]||key}</div>
                     <div style={{ flex:1, height:6, background:"#3D2B1F", borderRadius:3, overflow:"hidden" }}>
-                      <div style={{ height:"100%", width:`${(score as number)*10}%`, background:scoreColor(score as number), borderRadius:3, transition:"width 1s" }} />
+                      <div style={{ height:"100%", width:`${(score as number)*10}%`, background:scoreColor(score as number), borderRadius:3 }} />
                     </div>
-                    <div style={{ width:32, fontSize:14, fontWeight:600, color:scoreColor(score as number), textAlign:"right" }}>{score as number}</div>
+                    <div style={{ width:28, fontSize:14, fontWeight:600, color:scoreColor(score as number), textAlign:"right" }}>{score as number}</div>
                   </div>
                 ))}
               </div>
@@ -591,31 +556,22 @@ function Entregable({ proyectoId, nombreEmpresa, proyectoData }: { proyectoId:st
           </div>
         )}
 
-        {seccion==="roadmap" && (
+        {seccion==="roadmap"&&(
           <div>
             <h1 style={{ fontFamily:"Georgia,serif", fontSize:40, fontWeight:300, color:"#FAF7F2", marginBottom:40 }}>Roadmap 90 días</h1>
-            {diagnostico.roadmap?.map((fase:any, fi:number)=>{
-              const colors = ["#B8935A","#8B5E3C","#7A8C7E"];
+            {diagnostico?.roadmap?.map((fase:any,fi:number)=>{
+              const cols=["#B8935A","#8B5E3C","#7A8C7E"];
               return (
                 <div key={fi} style={{ marginBottom:32 }}>
-                  <div style={{ display:"inline-flex", alignItems:"center", gap:10, padding:"6px 16px", borderRadius:20, border:`1px solid ${colors[fi]}`, background:`${colors[fi]}15`, marginBottom:16 }}>
-                    <div style={{ width:8, height:8, borderRadius:"50%", background:colors[fi] }} />
-                    <span style={{ fontFamily:"Georgia,serif", fontSize:18, color:colors[fi] }}>{fase.fase}</span>
+                  <div style={{ display:"inline-flex", alignItems:"center", gap:10, padding:"6px 16px", borderRadius:20, border:`1px solid ${cols[fi]}`, background:`${cols[fi]}15`, marginBottom:16 }}>
+                    <div style={{ width:8, height:8, borderRadius:"50%", background:cols[fi] }} />
+                    <span style={{ fontFamily:"Georgia,serif", fontSize:18, color:cols[fi] }}>{fase.fase}</span>
                   </div>
-                  {fase.acciones?.map((item:any, i:number)=>(
+                  {fase.acciones?.map((item:any,i:number)=>(
                     <div key={i} style={{ display:"grid", gridTemplateColumns:"2fr 1fr 1fr", gap:16, padding:"16px 20px", background:"#2A2016", borderRadius:10, border:"1px solid #3D2B1F", marginBottom:10 }}>
-                      <div>
-                        <div style={{ fontSize:10, color:"#9E9088", marginBottom:6 }}>ACCIÓN</div>
-                        <div style={{ fontSize:13, color:"#FAF7F2", fontWeight:500 }}>{item.accion}</div>
-                      </div>
-                      <div>
-                        <div style={{ fontSize:10, color:"#9E9088", marginBottom:6 }}>KPI</div>
-                        <div style={{ fontSize:12, color:"#FAF7F2" }}>{item.kpi}</div>
-                      </div>
-                      <div>
-                        <div style={{ fontSize:10, color:"#9E9088", marginBottom:6 }}>RESULTADO</div>
-                        <div style={{ fontSize:12, color:colors[fi], fontWeight:500 }}>{item.resultado}</div>
-                      </div>
+                      <div><div style={{ fontSize:10, color:"#9E9088", marginBottom:6 }}>ACCIÓN</div><div style={{ fontSize:13, color:"#FAF7F2", fontWeight:500 }}>{item.accion}</div></div>
+                      <div><div style={{ fontSize:10, color:"#9E9088", marginBottom:6 }}>KPI</div><div style={{ fontSize:12, color:"#FAF7F2" }}>{item.kpi}</div></div>
+                      <div><div style={{ fontSize:10, color:"#9E9088", marginBottom:6 }}>RESULTADO</div><div style={{ fontSize:12, color:cols[fi], fontWeight:500 }}>{item.resultado}</div></div>
                     </div>
                   ))}
                 </div>
@@ -624,14 +580,13 @@ function Entregable({ proyectoId, nombreEmpresa, proyectoData }: { proyectoId:st
           </div>
         )}
 
-        {seccion==="ingresos" && (
+        {seccion==="ingresos"&&(
           <div>
             <h1 style={{ fontFamily:"Georgia,serif", fontSize:40, fontWeight:300, color:"#FAF7F2", marginBottom:40 }}>Plan de ingresos</h1>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:20 }}>
-              {[
-                ["Conservador","#9E9088",diagnostico.plan_ingresos?.conservador],
-                ["Realista","#B8935A",diagnostico.plan_ingresos?.realista],
-                ["Ambicioso","#7A8C7E",diagnostico.plan_ingresos?.ambicioso]
+              {[["Conservador","#9E9088",diagnostico?.plan_ingresos?.conservador],
+                ["Realista","#B8935A",diagnostico?.plan_ingresos?.realista],
+                ["Ambicioso","#7A8C7E",diagnostico?.plan_ingresos?.ambicioso]
               ].map(([label,color,data]:any[])=>(
                 <div key={label} style={{ padding:24, background:"#2A2016", borderRadius:12, border:`1px solid ${color}33`, position:"relative", overflow:"hidden" }}>
                   <div style={{ position:"absolute", top:0, left:0, right:0, height:3, background:color }} />
