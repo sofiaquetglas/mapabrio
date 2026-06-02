@@ -2,10 +2,11 @@
 import { useState, useEffect } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+const getSupabase = () => createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL || "",
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
 );
+const supabase = typeof window !== "undefined" ? getSupabase() : null as any;
 
 const MODULOS = [
   { id:"vision", emoji:"◎", label:"Visión del negocio", preguntas:[
