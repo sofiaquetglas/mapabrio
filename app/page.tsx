@@ -78,14 +78,38 @@ export default function App() {
   const [userId, setUserId] = useState("");
   const [proyectoData, setProyectoData] = useState<any>(null);
 
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session?.user) {
-        setUserId(data.session.user.id);
+useEffect(() => {
+  supabase.auth.getSession().then(async ({ data }) => {
+    if (data.session?.user) {
+      setUserId(data.session.user.id);
+      // Buscar proyecto existente
+      const { data: proyectos } = await supabase
+        .from("proyectos")
+        .select("*")
+        .eq("user_id", data.session.user.id)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      if (proyectos && proyectos.length > 0) {
+        const p = proyectos[0];
+        setProyectoId(p.id);
+        setNombreEmpresa(p.nombre_empresa);
+        setProyectoData(p);
+        // Buscar módulos guardados
+        const { data: modulos } = await supabase
+          .from("modulos_respuestas")
+          .select("*")
+          .eq("proyecto_id", p.id);
+        if (modulos && modulos.length > 0) {
+          setPantalla("diagnostico");
+        } else {
+          setPantalla("onboarding");
+        }
+      } else {
         setPantalla("onboarding");
       }
-    });
-  }, []);
+    }
+  });
+}, []);
 
   if (pantalla === "onboarding") return (
     <Onboarding userId={userId} onDone={(id, nombre, data) => {
