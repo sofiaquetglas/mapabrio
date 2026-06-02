@@ -99,7 +99,8 @@ export default function App() {
       const { data: mods } = await supabase
         .from("modulos_respuestas").select("*").eq("proyecto_id", p.id);
       setModulosGuardados(mods || []);
-      setPantalla("diagnostico");
+setPantalla("diagnostico");
+setDiagnostico(null); // siempre va al diagnóstico, nunca al entregable
     });
   }, []);
 
